@@ -1,3 +1,4 @@
+import { useState, useEffect, useCallback } from 'react'
 import Header from '@/components/layout/Header'
 import WorkspaceLayout from '@/components/layout/WorkspaceLayout'
 import DropZone from '@/components/upload/DropZone'
@@ -6,11 +7,12 @@ import CompressionPanel from '@/components/panels/CompressionPanel'
 import CropPanel from '@/components/panels/CropPanel'
 import EditPanel from '@/components/panels/EditPanel'
 import CompareSlider from '@/components/preview/CompareSlider'
+import CropEditor from '@/components/preview/CropEditor'
 import BatchQueue from '@/components/batch/BatchQueue'
 import { useAppStore } from '@/store/useAppStore'
 import { useAutoProcess } from '@/hooks/useAutoProcess'
 import { formatBytes } from '@/utils/imageCompress'
-import { ShieldCheck, Zap, Gauge } from 'lucide-react'
+import { ShieldCheck, Zap, Gauge, ArrowLeftRight, Crop } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 function ImageStats() {
@@ -134,8 +136,34 @@ function CenterPanel() {
   const comparePosition = useAppStore((s) => s.comparePosition)
   const setComparePosition = useAppStore((s) => s.setComparePosition)
   const setCompareZoom = useAppStore((s) => s.setCompareZoom)
+  const processImage = useAppStore((s) => s.processImage)
+
+  const [isCropMode, setIsCropMode] = useState(false)
 
   useAutoProcess()
+
+  useEffect(() => {
+    const handleOpenCrop = () => setIsCropMode(true)
+    window.addEventListener('open-crop-editor', handleOpenCrop)
+    return () => window.removeEventListener('open-crop-editor', handleOpenCrop)
+  }, [])
+
+  useEffect(() => {
+    if (selectedImage && !selectedImage.params.crop.enabled) {
+      setIsCropMode(false)
+    }
+  }, [selectedImage?.params.crop.enabled, selectedImage?.id])
+
+  const handleCropComplete = useCallback(() => {
+    setIsCropMode(false)
+    if (selectedImage) {
+      processImage(selectedImage.id)
+    }
+  }, [selectedImage, processImage])
+
+  const handleCropCancel = useCallback(() => {
+    setIsCropMode(false)
+  }, [])
 
   if (!selectedImage) {
     return (
@@ -165,35 +193,82 @@ function CenterPanel() {
 
   return (
     <div className="h-full flex flex-col p-4 gap-4 animate-fade-in">
-      <ImageStats />
-      <div className="flex-1 min-h-0">
-        <CompareSlider
-          originalUrl={selectedImage.originalUrl}
-          processedUrl={selectedImage.processedUrl}
-          initialPosition={comparePosition}
-          onPositionChange={setComparePosition}
-          zoom={compareZoom}
-        />
-      </div>
-      <div className="flex justify-end">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-ink-300">对比缩放：</span>
-          {([1, 2] as const).map((z) => (
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex-1">
+          <ImageStats />
+        </div>
+        <div className="flex flex-col items-end gap-2 shrink-0">
+          <div className="flex items-center gap-2">
+            {selectedImage.params.crop.enabled && (
+              <button
+                type="button"
+                onClick={() => setIsCropMode(!isCropMode)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+                  isCropMode
+                    ? 'bg-gradient-accent text-white shadow-glow'
+                    : 'bg-ink-600/60 text-ink-200 hover:bg-ink-600 border border-ink-500/30',
+                )}
+              >
+                <Crop size={14} />
+                裁剪模式
+              </button>
+            )}
             <button
-              key={z}
               type="button"
-              onClick={() => setCompareZoom(z)}
+              onClick={() => setIsCropMode(false)}
               className={cn(
-                'px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200',
-                compareZoom === z
+                'flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-200',
+                !isCropMode
                   ? 'bg-gradient-accent text-white shadow-glow'
                   : 'bg-ink-600/60 text-ink-200 hover:bg-ink-600 border border-ink-500/30',
               )}
             >
-              {z * 100}%
+              <ArrowLeftRight size={14} />
+              对比模式
             </button>
-          ))}
+          </div>
+          {!isCropMode && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-ink-300">对比缩放：</span>
+              {([1, 2] as const).map((z) => (
+                <button
+                  key={z}
+                  type="button"
+                  onClick={() => setCompareZoom(z)}
+                  className={cn(
+                    'px-2.5 py-1 rounded-lg text-xs font-medium transition-all duration-200',
+                    compareZoom === z
+                      ? 'bg-gradient-accent text-white shadow-glow'
+                      : 'bg-ink-600/60 text-ink-200 hover:bg-ink-600 border border-ink-500/30',
+                  )}
+                >
+                  {z * 100}%
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+      </div>
+
+      <div className="flex-1 min-h-0">
+        {isCropMode ? (
+          <CropEditor
+            imageUrl={selectedImage.originalUrl}
+            imageId={selectedImage.id}
+            onComplete={handleCropComplete}
+            onCancel={handleCropCancel}
+            aspect={selectedImage.params.crop.aspect}
+          />
+        ) : (
+          <CompareSlider
+            originalUrl={selectedImage.originalUrl}
+            processedUrl={selectedImage.processedUrl}
+            initialPosition={comparePosition}
+            onPositionChange={setComparePosition}
+            zoom={compareZoom}
+          />
+        )}
       </div>
     </div>
   )

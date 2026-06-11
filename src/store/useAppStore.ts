@@ -2,8 +2,14 @@ import { create } from 'zustand'
 import type { AppState, ImageItem, ProcessParams, PartialProcessParams } from '@/types'
 import { DEFAULT_PARAMS as defaultParams } from '@/types'
 import { readImageMeta } from '@/utils/exif'
-import { applyEditTransforms, compressImage, blobToDataUrl } from '@/utils/imageCompress'
-import { applyCropFromParams } from '@/utils/imageCrop'
+import {
+  applyEditAndExif,
+  cropImage,
+  compressImageCanvas,
+  compressToTargetSize,
+  resolveMimeType,
+  getBestSupportedFormat,
+} from '@/utils/imageCompress'
 import { estimateSSIM, getImageDataFromUrl } from '@/utils/ssim'
 
 let idCounter = 0
@@ -28,6 +34,7 @@ interface StoreActions {
   downloadImage: (id: string) => void
   downloadAllZip: () => Promise<void>
   clearAll: () => void
+  updateCropArea: (id: string, crop: { x: number; y: number }, zoom: number) => void
 }
 
 type FullState = AppState & StoreActions
@@ -56,6 +63,14 @@ export const useAppStore = create<FullState>((set, get) => ({
         const originalUrl = URL.createObjectURL(file)
         const { globalParams } = get()
 
+        const params = cloneParams(globalParams)
+        params.crop.cropArea = {
+          x: meta.width * 0.1,
+          y: meta.height * 0.1,
+          width: meta.width * 0.8,
+          height: meta.height * 0.8,
+        }
+
         const item: ImageItem = {
           id,
           file,
@@ -66,7 +81,7 @@ export const useAppStore = create<FullState>((set, get) => ({
           originalMeta: meta,
           processedMeta: null,
           status: 'pending',
-          params: cloneParams(globalParams),
+          params,
           progress: 0,
         }
 
@@ -89,7 +104,10 @@ export const useAppStore = create<FullState>((set, get) => ({
     }
     set((state) => ({
       images: state.images.filter((i) => i.id !== id),
-      selectedId: state.selectedId === id ? state.images.find((i) => i.id !== id)?.id ?? null : state.selectedId,
+      selectedId:
+        state.selectedId === id
+          ? state.images.find((i) => i.id !== id)?.id ?? null
+          : state.selectedId,
     }))
   },
 
@@ -98,7 +116,10 @@ export const useAppStore = create<FullState>((set, get) => ({
   updateParams: (id, partialParams) => {
     set((state) => {
       const targetImage = state.images.find((img) => img.id === id)
-      const baseParams = targetImage ? { ...targetImage.params } : { ...state.globalParams }
+      const baseParams = targetImage
+        ? cloneParams(targetImage.params)
+        : cloneParams(state.globalParams)
+
       if (partialParams.compression) {
         baseParams.compression = { ...baseParams.compression, ...partialParams.compression }
       }
@@ -112,15 +133,18 @@ export const useAppStore = create<FullState>((set, get) => ({
       if (state.applyToAll) {
         return {
           globalParams: baseParams,
-          images: state.images.map((img) => ({
-            ...img,
-            params: cloneParams(baseParams),
-            status: 'pending',
-            processedUrl: null,
-            processedMeta: null,
-            processedBlob: null,
-            progress: 0,
-          })),
+          images: state.images.map((img) => {
+            const merged = cloneParams(baseParams)
+            return {
+              ...img,
+              params: merged,
+              status: 'pending',
+              processedUrl: null,
+              processedMeta: null,
+              processedBlob: null,
+              progress: 0,
+            }
+          }),
         }
       }
 
@@ -160,6 +184,44 @@ export const useAppStore = create<FullState>((set, get) => ({
 
   setApplyToAll: (apply) => set({ applyToAll: apply }),
 
+  updateCropArea: (id, crop, zoom) => {
+    set((state) => ({
+      images: state.images.map((img) => {
+        if (img.id !== id) return img
+        const newParams = cloneParams(img.params)
+        newParams.crop.zoom = zoom
+        const { width: imgW, height: imgH } = img.originalMeta
+
+        const aspectRatio = newParams.crop.aspect === 'free' ? null : getAspectValue(newParams.crop.aspect)
+        let cropW: number
+        let cropH: number
+        if (aspectRatio) {
+          if (aspectRatio > imgW / imgH) {
+            cropW = imgW / zoom
+            cropH = cropW / aspectRatio
+          } else {
+            cropH = imgH / zoom
+            cropW = cropH * aspectRatio
+          }
+        } else {
+          cropW = (imgW * 0.8) / zoom
+          cropH = (imgH * 0.8) / zoom
+        }
+
+        const centerX = imgW / 2 - crop.x * (imgW / (zoom * 100))
+        const centerY = imgH / 2 - crop.y * (imgH / (zoom * 100))
+
+        newParams.crop.cropArea = {
+          x: Math.max(0, Math.min(imgW - cropW, centerX - cropW / 2)),
+          y: Math.max(0, Math.min(imgH - cropH, centerY - cropH / 2)),
+          width: cropW,
+          height: cropH,
+        }
+        return { ...img, params: newParams, status: 'pending', processedUrl: null }
+      }),
+    }))
+  },
+
   processImage: async (id) => {
     const state = get()
     const item = state.images.find((i) => i.id === id)
@@ -172,14 +234,15 @@ export const useAppStore = create<FullState>((set, get) => ({
     }))
 
     try {
-      const { params, originalUrl, originalMeta } = item
+      const { params, originalUrl, originalMeta, file } = item
 
       set((s) => ({
-        images: s.images.map((i) => (i.id === id ? { ...i, progress: 25 } : i)),
+        images: s.images.map((i) => (i.id === id ? { ...i, progress: 20 } : i)),
       }))
 
+      let workingCanvas: HTMLCanvasElement | null = null
       let workingUrl = originalUrl
-      let workingBlob: Blob = item.file
+      let workingBlob: Blob = file
 
       const needsEdit =
         params.edit.rotation !== 0 ||
@@ -189,42 +252,72 @@ export const useAppStore = create<FullState>((set, get) => ({
         originalMeta.exifOrientation !== 1
 
       if (needsEdit) {
-        workingUrl = await applyEditTransforms(originalUrl, originalMeta.exifOrientation, params.edit)
+        const result = await applyEditAndExif(file, originalMeta.exifOrientation, params.edit)
+        workingCanvas = result.canvas
+        workingUrl = result.url
+        workingBlob = result.blob
       }
 
       set((s) => ({
-        images: s.images.map((i) => (i.id === id ? { ...i, progress: 45 } : i)),
+        images: s.images.map((i) => (i.id === id ? { ...i, progress: 40 } : i)),
       }))
 
       if (params.crop.enabled) {
-        const croppedBlob = await applyCropFromParams(
-          workingUrl,
-          params.crop,
-          params.edit.flipH,
-          params.edit.flipV,
-        )
-        workingBlob = croppedBlob
-        workingUrl = URL.createObjectURL(croppedBlob)
+        const cropped = await cropImage(workingUrl, params.crop.cropArea, {
+          rotation: params.crop.rotation,
+          flipH: params.edit.flipH && !needsEdit,
+          flipV: params.edit.flipV && !needsEdit,
+          outputWidth: params.crop.outputWidth ?? undefined,
+          outputHeight: params.crop.outputHeight ?? undefined,
+        })
+        workingBlob = cropped.blob
+        workingUrl = cropped.url
+        workingCanvas = cropped.canvas
       }
 
       set((s) => ({
-        images: s.images.map((i) => (i.id === id ? { ...i, progress: 65 } : i)),
+        images: s.images.map((i) => (i.id === id ? { ...i, progress: 60 } : i)),
       }))
 
-      const { blob, qualityUsed } = await compressImage(
-        workingBlob,
-        params.compression,
+      const effectiveFormat = getBestSupportedFormat(
+        params.compression.outputFormat,
         originalMeta.mimeType,
-        (p) => {
-          set((s) => ({
-            images: s.images.map((i) =>
-              i.id === id ? { ...i, progress: Math.min(90, 65 + Math.round(p * 0.25)) } : i,
-            ),
-          }))
-        },
       )
+      const mimeType = resolveMimeType(effectiveFormat, originalMeta.mimeType)
 
-      const processedUrl = URL.createObjectURL(blob)
+      let finalBlob: Blob
+      let finalUrl: string
+      let qualityUsed: number
+
+      if (params.compression.targetSizeKB && params.compression.targetSizeKB > 0) {
+        const result = await compressToTargetSize(
+          workingCanvas ?? workingBlob,
+          mimeType,
+          params.compression.targetSizeKB,
+          (p) => {
+            set((s) => ({
+              images: s.images.map((i) =>
+                i.id === id ? { ...i, progress: Math.min(90, 60 + p * 0.3) } : i,
+              ),
+            }))
+          },
+        )
+        finalBlob = result.blob
+        finalUrl = result.url
+        qualityUsed = result.qualityUsed
+      } else {
+        const result = await compressImageCanvas(
+          workingCanvas ?? workingBlob,
+          mimeType,
+          params.compression.quality,
+        )
+        finalBlob = result.blob
+        finalUrl = result.url
+        qualityUsed = params.compression.quality
+        set((s) => ({
+          images: s.images.map((i) => (i.id === id ? { ...i, progress: 85 } : i)),
+        }))
+      }
 
       set((s) => ({
         images: s.images.map((i) => (i.id === id ? { ...i, progress: 92 } : i)),
@@ -234,7 +327,7 @@ export const useAppStore = create<FullState>((set, get) => ({
       try {
         const [origImgData, procImgData] = await Promise.all([
           getImageDataFromUrl(originalUrl),
-          getImageDataFromUrl(processedUrl),
+          getImageDataFromUrl(finalUrl),
         ])
         const minW = Math.min(origImgData.width, procImgData.width)
         const minH = Math.min(origImgData.height, procImgData.height)
@@ -243,31 +336,33 @@ export const useAppStore = create<FullState>((set, get) => ({
         // SSIM is optional
       }
 
-      const processedMeta = {
-        width: 0,
-        height: 0,
-        size: blob.size,
-        mimeType: blob.type,
-        ssim,
-        qualityUsed,
-      }
-
       const procImg = new Image()
       await new Promise<void>((resolve) => {
         procImg.onload = () => resolve()
         procImg.onerror = () => resolve()
-        procImg.src = processedUrl
+        procImg.src = finalUrl
       })
-      processedMeta.width = procImg.naturalWidth
-      processedMeta.height = procImg.naturalHeight
+
+      const processedMeta = {
+        width: procImg.naturalWidth,
+        height: procImg.naturalHeight,
+        size: finalBlob.size,
+        mimeType: finalBlob.type,
+        ssim,
+        qualityUsed,
+      }
+
+      if (workingUrl !== originalUrl && !params.crop.enabled) {
+        URL.revokeObjectURL(workingUrl)
+      }
 
       set((s) => ({
         images: s.images.map((i) =>
           i.id === id
             ? {
                 ...i,
-                processedUrl,
-                processedBlob: blob,
+                processedUrl: finalUrl,
+                processedBlob: finalBlob,
                 processedMeta,
                 status: 'done',
                 progress: 100,
@@ -276,10 +371,16 @@ export const useAppStore = create<FullState>((set, get) => ({
         ),
       }))
     } catch (err) {
+      console.error('Processing error:', err)
       set((s) => ({
         images: s.images.map((i) =>
           i.id === id
-            ? { ...i, status: 'error', error: err instanceof Error ? err.message : 'Processing failed', progress: 0 }
+            ? {
+                ...i,
+                status: 'error',
+                error: err instanceof Error ? err.message : 'Processing failed',
+                progress: 0,
+              }
             : i,
         ),
       }))
@@ -310,15 +411,17 @@ export const useAppStore = create<FullState>((set, get) => ({
     const a = document.createElement('a')
     a.href = item.processedUrl
     const baseName = item.name.replace(/\.[^.]+$/, '')
-    const ext = item.processedMeta?.mimeType === 'image/jpeg'
-      ? 'jpg'
-      : item.processedMeta?.mimeType === 'image/png'
-      ? 'png'
-      : item.processedMeta?.mimeType === 'image/webp'
-      ? 'webp'
-      : item.processedMeta?.mimeType === 'image/avif'
-      ? 'avif'
-      : 'img'
+    const mime = item.processedMeta?.mimeType || 'image/jpeg'
+    const ext =
+      mime === 'image/jpeg'
+        ? 'jpg'
+        : mime === 'image/png'
+        ? 'png'
+        : mime === 'image/webp'
+        ? 'webp'
+        : mime === 'image/avif'
+        ? 'avif'
+        : 'img'
     a.download = `${baseName}_processed.${ext}`
     document.body.appendChild(a)
     a.click()
@@ -336,15 +439,17 @@ export const useAppStore = create<FullState>((set, get) => ({
     for (const img of doneImages) {
       if (!img.processedBlob) continue
       const baseName = img.name.replace(/\.[^.]+$/, '')
-      const ext = img.processedMeta?.mimeType === 'image/jpeg'
-        ? 'jpg'
-        : img.processedMeta?.mimeType === 'image/png'
-        ? 'png'
-        : img.processedMeta?.mimeType === 'image/webp'
-        ? 'webp'
-        : img.processedMeta?.mimeType === 'image/avif'
-        ? 'avif'
-        : 'img'
+      const mime = img.processedMeta?.mimeType || 'image/jpeg'
+      const ext =
+        mime === 'image/jpeg'
+          ? 'jpg'
+          : mime === 'image/png'
+          ? 'png'
+          : mime === 'image/webp'
+          ? 'webp'
+          : mime === 'image/avif'
+          ? 'avif'
+          : 'img'
       zip.file(`${baseName}_processed.${ext}`, img.processedBlob)
     }
 
@@ -368,3 +473,18 @@ export const useAppStore = create<FullState>((set, get) => ({
     set({ images: [], selectedId: null })
   },
 }))
+
+function getAspectValue(aspect: string): number | null {
+  switch (aspect) {
+    case '1:1':
+      return 1
+    case '4:3':
+      return 4 / 3
+    case '16:9':
+      return 16 / 9
+    case 'id-photo':
+      return 295 / 413
+    default:
+      return null
+  }
+}

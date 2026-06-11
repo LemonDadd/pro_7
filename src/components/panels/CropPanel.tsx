@@ -1,4 +1,4 @@
-import { Crop, Link, Unlink } from 'lucide-react'
+import { Crop, Link, Unlink, Maximize2 } from 'lucide-react'
 import Slider from '@/components/common/Slider'
 import Toggle from '@/components/common/Toggle'
 import { useAppStore } from '@/store/useAppStore'
@@ -15,11 +15,20 @@ const aspectOptions: { value: AspectRatio; label: string }[] = [
 ]
 
 export default function CropPanel() {
-  const { selectedId, applyToAll, images, globalParams, updateParams, updateGlobalParams } = useAppStore()
+  const {
+    selectedId,
+    applyToAll,
+    images,
+    globalParams,
+    updateParams,
+    updateGlobalParams,
+  } = useAppStore()
 
   const params = selectedId
     ? images.find((img) => img.id === selectedId)?.params.crop ?? globalParams.crop
     : globalParams.crop
+
+  const hasImage = selectedId !== null
 
   const applyChange = (partial: PartialProcessParams) => {
     if (applyToAll) {
@@ -27,6 +36,11 @@ export default function CropPanel() {
     } else if (selectedId) {
       updateParams(selectedId, partial)
     }
+  }
+
+  const handleOpenCropEditor = () => {
+    const event = new CustomEvent('open-crop-editor')
+    window.dispatchEvent(event)
   }
 
   const handleWidthChange = (value: string) => {
@@ -62,6 +76,22 @@ export default function CropPanel() {
         label="启用裁剪"
         description="开启后可设置裁剪比例和输出尺寸"
       />
+
+      {params.enabled && hasImage && (
+        <button
+          type="button"
+          onClick={handleOpenCropEditor}
+          className={cn(
+            'w-full flex items-center justify-center gap-2 py-2.5 rounded-xl',
+            'bg-gradient-accent/10 border border-accent-500/30 text-accent-400',
+            'hover:bg-gradient-accent/20 hover:border-accent-500/50',
+            'transition-all duration-200 text-sm font-medium',
+          )}
+        >
+          <Maximize2 size={16} />
+          打开可视化裁剪编辑器
+        </button>
+      )}
 
       <div className={cn('space-y-4', !params.enabled && 'opacity-50 pointer-events-none')}>
         <div className="space-y-2">
