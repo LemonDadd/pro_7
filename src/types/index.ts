@@ -1,6 +1,7 @@
 export type OutputFormat = 'original' | 'jpeg' | 'png' | 'webp' | 'avif'
 export type AspectRatio = 'free' | '1:1' | '4:3' | '16:9' | 'id-photo'
 export type ImageStatus = 'pending' | 'processing' | 'done' | 'error'
+export type EncoderType = 'canvas' | 'squoosh'
 
 export interface ImageMeta {
   width: number
@@ -26,6 +27,7 @@ export interface CompressionParams {
   targetSizeKB: number | null
   outputFormat: OutputFormat
   stripExif: boolean
+  encoder: EncoderType
 }
 
 export interface CropParams {
@@ -81,6 +83,7 @@ export const DEFAULT_PARAMS: ProcessParams = {
     targetSizeKB: null,
     outputFormat: 'original',
     stripExif: true,
+    encoder: 'squoosh',
   },
   crop: {
     enabled: false,

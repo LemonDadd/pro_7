@@ -1,8 +1,8 @@
-import { Package, ShieldCheck } from 'lucide-react'
+import { Package, ShieldCheck, Cpu, Zap } from 'lucide-react'
 import Slider from '@/components/common/Slider'
 import Toggle from '@/components/common/Toggle'
 import { useAppStore } from '@/store/useAppStore'
-import type { OutputFormat, PartialProcessParams } from '@/types'
+import type { OutputFormat, PartialProcessParams, EncoderType } from '@/types'
 import { cn } from '@/lib/utils'
 
 const formatOptions: { value: OutputFormat; label: string }[] = [
@@ -11,6 +11,11 @@ const formatOptions: { value: OutputFormat; label: string }[] = [
   { value: 'png', label: 'PNG' },
   { value: 'webp', label: 'WebP' },
   { value: 'avif', label: 'AVIF' },
+]
+
+const encoderOptions: { value: EncoderType; label: string; icon: React.ReactNode }[] = [
+  { value: 'squoosh', label: 'Squoosh', icon: <Cpu size={14} /> },
+  { value: 'canvas', label: 'Canvas', icon: <Zap size={14} /> },
 ]
 
 export default function CompressionPanel() {
@@ -90,6 +95,33 @@ export default function CompressionPanel() {
             </button>
           ))}
         </div>
+      </div>
+
+      <div className="space-y-2">
+        <span className="text-sm font-medium text-ink-100">编码器</span>
+        <div className="grid grid-cols-2 gap-2">
+          {encoderOptions.map((opt) => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => applyChange({ compression: { encoder: opt.value } })}
+              className={cn(
+                'flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl text-sm font-medium transition-all duration-200 border',
+                params.encoder === opt.value
+                  ? 'bg-gradient-accent text-white border-transparent shadow-glow'
+                  : 'bg-ink-600/60 text-ink-200 border-ink-500/30 hover:bg-ink-600 hover:border-accent-500/50',
+              )}
+            >
+              {opt.icon}
+              {opt.label}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs text-ink-400 px-1">
+          {params.encoder === 'squoosh'
+            ? 'Squoosh WASM: 更高质量，稍慢（MozJPEG / OxiPNG）'
+            : 'Canvas: 浏览器原生，速度快'}
+        </p>
       </div>
 
       <div className="glass-card p-4">

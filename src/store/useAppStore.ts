@@ -10,6 +10,7 @@ import {
   resolveMimeType,
   getBestSupportedFormat,
 } from '@/utils/imageCompress'
+import { compressWithSquoosh, getSquooshFormatFromMime } from '@/utils/squoosh'
 import { estimateSSIM, getImageDataFromUrl } from '@/utils/ssim'
 
 let idCounter = 0
@@ -289,7 +290,29 @@ export const useAppStore = create<FullState>((set, get) => ({
       let finalUrl: string
       let qualityUsed: number
 
-      if (params.compression.targetSizeKB && params.compression.targetSizeKB > 0) {
+      const useSquoosh = params.compression.encoder === 'squoosh'
+      const squooshFormat = getSquooshFormatFromMime(mimeType)
+
+      if (useSquoosh && squooshFormat) {
+        const result = await compressWithSquoosh(
+          workingCanvas ?? workingBlob,
+          {
+            format: squooshFormat,
+            quality: params.compression.quality,
+            targetSizeKB: params.compression.targetSizeKB ?? null,
+          },
+          (p) => {
+            set((s) => ({
+              images: s.images.map((i) =>
+                i.id === id ? { ...i, progress: Math.min(92, 60 + p * 0.32) } : i,
+              ),
+            }))
+          },
+        )
+        finalBlob = result.blob
+        finalUrl = result.url
+        qualityUsed = result.qualityUsed
+      } else if (params.compression.targetSizeKB && params.compression.targetSizeKB > 0) {
         const result = await compressToTargetSize(
           workingCanvas ?? workingBlob,
           mimeType,
