@@ -292,54 +292,70 @@ export const useAppStore = create<FullState>((set, get) => ({
 
       const useSquoosh = params.compression.encoder === 'squoosh'
       const squooshFormat = getSquooshFormatFromMime(mimeType)
+      let squooshFailed = false
 
       if (useSquoosh && squooshFormat) {
-        const result = await compressWithSquoosh(
-          workingCanvas ?? workingBlob,
-          {
-            format: squooshFormat,
-            quality: params.compression.quality,
-            targetSizeKB: params.compression.targetSizeKB ?? null,
-          },
-          (p) => {
-            set((s) => ({
-              images: s.images.map((i) =>
-                i.id === id ? { ...i, progress: Math.min(92, 60 + p * 0.32) } : i,
-              ),
-            }))
-          },
-        )
-        finalBlob = result.blob
-        finalUrl = result.url
-        qualityUsed = result.qualityUsed
-      } else if (params.compression.targetSizeKB && params.compression.targetSizeKB > 0) {
-        const result = await compressToTargetSize(
-          workingCanvas ?? workingBlob,
-          mimeType,
-          params.compression.targetSizeKB,
-          (p) => {
-            set((s) => ({
-              images: s.images.map((i) =>
-                i.id === id ? { ...i, progress: Math.min(90, 60 + p * 0.3) } : i,
-              ),
-            }))
-          },
-        )
-        finalBlob = result.blob
-        finalUrl = result.url
-        qualityUsed = result.qualityUsed
-      } else {
-        const result = await compressImageCanvas(
-          workingCanvas ?? workingBlob,
-          mimeType,
-          params.compression.quality,
-        )
-        finalBlob = result.blob
-        finalUrl = result.url
-        qualityUsed = params.compression.quality
-        set((s) => ({
-          images: s.images.map((i) => (i.id === id ? { ...i, progress: 85 } : i)),
-        }))
+        try {
+          const timeoutPromise = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error('Squoosh timeout')), 30000),
+          )
+          const result = await Promise.race([
+            compressWithSquoosh(
+              workingCanvas ?? workingBlob,
+              {
+                format: squooshFormat,
+                quality: params.compression.quality,
+                targetSizeKB: params.compression.targetSizeKB ?? null,
+              },
+              (p) => {
+                set((s) => ({
+                  images: s.images.map((i) =>
+                    i.id === id ? { ...i, progress: Math.min(92, 60 + p * 0.32) } : i,
+                  ),
+                }))
+              },
+            ),
+            timeoutPromise,
+          ])
+          finalBlob = result.blob
+          finalUrl = result.url
+          qualityUsed = result.qualityUsed
+        } catch (err) {
+          console.warn('Squoosh encoding failed, falling back to Canvas:', err)
+          squooshFailed = true
+        }
+      }
+
+      if (!useSquoosh || squooshFailed || !squooshFormat) {
+        if (params.compression.targetSizeKB && params.compression.targetSizeKB > 0) {
+          const result = await compressToTargetSize(
+            workingCanvas ?? workingBlob,
+            mimeType,
+            params.compression.targetSizeKB,
+            (p) => {
+              set((s) => ({
+                images: s.images.map((i) =>
+                  i.id === id ? { ...i, progress: Math.min(90, 60 + p * 0.3) } : i,
+                ),
+              }))
+            },
+          )
+          finalBlob = result.blob
+          finalUrl = result.url
+          qualityUsed = result.qualityUsed
+        } else {
+          const result = await compressImageCanvas(
+            workingCanvas ?? workingBlob,
+            mimeType,
+            params.compression.quality,
+          )
+          finalBlob = result.blob
+          finalUrl = result.url
+          qualityUsed = params.compression.quality
+          set((s) => ({
+            images: s.images.map((i) => (i.id === id ? { ...i, progress: 85 } : i)),
+          }))
+        }
       }
 
       set((s) => ({

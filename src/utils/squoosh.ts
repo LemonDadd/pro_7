@@ -1,9 +1,9 @@
-import mozjpegEnc from '@jsquash/jpeg/codec/enc/mozjpeg_enc.js'
-import mozjpegDec from '@jsquash/jpeg/codec/dec/mozjpeg_dec.js'
-import initPngWasm, { encode as pngEncode } from '@jsquash/png/codec/pkg/squoosh_png.js'
-import webpEnc from '@jsquash/webp/codec/enc/webp_enc.js'
-import webpDec from '@jsquash/webp/codec/dec/webp_dec.js'
-import avifEnc from '@jsquash/avif/codec/enc/avif_enc.js'
+import mozjpegEncFactory from '@jsquash/jpeg/codec/enc/mozjpeg_enc.js'
+import mozjpegDecFactory from '@jsquash/jpeg/codec/dec/mozjpeg_dec.js'
+import initPngWasm, { encode as pngWasmEncode, decode as pngWasmDecode } from '@jsquash/png/codec/pkg/squoosh_png.js'
+import webpEncFactory from '@jsquash/webp/codec/enc/webp_enc.js'
+import webpDecFactory from '@jsquash/webp/codec/dec/webp_dec.js'
+import avifEncFactory from '@jsquash/avif/codec/enc/avif_enc.js'
 import { defaultOptions as jpegDefaultOptions } from '@jsquash/jpeg/meta'
 import { defaultOptions as webpDefaultOptions } from '@jsquash/webp/meta'
 import { defaultOptions as avifDefaultOptions } from '@jsquash/avif/meta'
@@ -20,55 +20,42 @@ interface SquooshOptions {
 }
 
 type ModuleType = any
-const modules: Partial<Record<string, Promise<ModuleType>>> = {}
-const pngReady: { promise?: Promise<void> } = {}
-
-function initEmscriptenModule(factory: ModuleType): Promise<ModuleType> {
-  return new Promise((resolve) => {
-    const instance = factory({
-      noInitialRun: true,
-      onRuntimeInitialized() {
-        resolve(instance)
-      },
-    })
-  })
-}
+const modulePromises: Partial<Record<string, Promise<ModuleType>>> = {}
+let pngReady: Promise<void> | null = null
 
 async function getEmscriptenModule(key: string, factory: ModuleType): Promise<ModuleType> {
-  if (!modules[key]) {
-    modules[key] = initEmscriptenModule(factory)
+  if (!modulePromises[key]) {
+    modulePromises[key] = factory({ noInitialRun: true })
   }
-  return modules[key]
+  return modulePromises[key]
 }
 
-async function initPng(): Promise<void> {
-  if (!pngReady.promise) {
-    pngReady.promise = (async () => {
-      await initPngWasm()
-    })()
+async function ensurePng(): Promise<void> {
+  if (!pngReady) {
+    pngReady = initPngWasm() as unknown as Promise<void>
   }
-  return pngReady.promise
+  return pngReady
 }
 
 async function ensureInit(format: SquooshFormat): Promise<void> {
   switch (format) {
     case 'jpeg':
       await Promise.all([
-        getEmscriptenModule('jpeg-enc', mozjpegEnc),
-        getEmscriptenModule('jpeg-dec', mozjpegDec),
+        getEmscriptenModule('jpeg-enc', mozjpegEncFactory),
+        getEmscriptenModule('jpeg-dec', mozjpegDecFactory),
       ])
       break
     case 'png':
-      await initPng()
+      await ensurePng()
       break
     case 'webp':
       await Promise.all([
-        getEmscriptenModule('webp-enc', webpEnc),
-        getEmscriptenModule('webp-dec', webpDec),
+        getEmscriptenModule('webp-enc', webpEncFactory),
+        getEmscriptenModule('webp-dec', webpDecFactory),
       ])
       break
     case 'avif':
-      await getEmscriptenModule('avif-enc', avifEnc)
+      await getEmscriptenModule('avif-enc', avifEncFactory)
       break
   }
 }
@@ -91,12 +78,10 @@ async function blobToImageData(blob: Blob): Promise<ImageData> {
     canvas.height = img.naturalHeight
     const ctx = canvas.getContext('2d')
     if (!ctx) throw new Error('Failed to get canvas context')
-
     if (blob.type === 'image/jpeg') {
       ctx.fillStyle = '#ffffff'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
     }
-
     ctx.drawImage(img, 0, 0)
     return ctx.getImageData(0, 0, canvas.width, canvas.height)
   } finally {
@@ -114,7 +99,7 @@ function loadImage(src: string): Promise<HTMLImageElement> {
 }
 
 async function encodeJpeg(imageData: ImageData, quality: number): Promise<ArrayBuffer> {
-  const mod = await getEmscriptenModule('jpeg-enc', mozjpegEnc)
+  const mod = await getEmscriptenModule('jpeg-enc', mozjpegEncFactory)
   const options: Partial<JpegEncodeOptions> = {
     ...jpegDefaultOptions,
     quality,
@@ -125,14 +110,14 @@ async function encodeJpeg(imageData: ImageData, quality: number): Promise<ArrayB
 }
 
 async function encodePng(imageData: ImageData): Promise<ArrayBuffer> {
-  await initPng()
+  await ensurePng()
   const rgbaData = new Uint8Array(imageData.data.buffer)
-  const result = pngEncode(rgbaData, imageData.width, imageData.height, 8)
+  const result = pngWasmEncode(rgbaData, imageData.width, imageData.height, 8)
   return result.buffer
 }
 
 async function encodeWebp(imageData: ImageData, quality: number): Promise<ArrayBuffer> {
-  const mod = await getEmscriptenModule('webp-enc', webpEnc)
+  const mod = await getEmscriptenModule('webp-enc', webpEncFactory)
   const options: Partial<WebPEncodeOptions> = {
     ...webpDefaultOptions,
     quality,
@@ -144,7 +129,7 @@ async function encodeWebp(imageData: ImageData, quality: number): Promise<ArrayB
 }
 
 async function encodeAvif(imageData: ImageData, quality: number): Promise<ArrayBuffer> {
-  const mod = await getEmscriptenModule('avif-enc', avifEnc)
+  const mod = await getEmscriptenModule('avif-enc', avifEncFactory)
   const options: Partial<AvifEncodeOptions> & { lossless?: boolean } = {
     ...avifDefaultOptions,
     quality,
@@ -163,8 +148,6 @@ async function encodeWithSquoosh(
   format: SquooshFormat,
   quality: number,
 ): Promise<ArrayBuffer> {
-  await ensureInit(format)
-
   switch (format) {
     case 'jpeg':
       return encodeJpeg(imageData, quality)
@@ -264,6 +247,30 @@ async function binarySearchCompress(
   const fallback = await encodeWithSquoosh(imageData, format, low)
   onProgress?.(95)
   return { buffer: fallback, quality: low }
+}
+
+export async function decodeWithSquoosh(
+  blob: Blob,
+  format: SquooshFormat,
+): Promise<ImageData> {
+  await ensureInit(format)
+  const arrayBuffer = await blob.arrayBuffer()
+
+  switch (format) {
+    case 'jpeg': {
+      const mod = await getEmscriptenModule('jpeg-dec', mozjpegDecFactory)
+      return mod.decode(new Uint8Array(arrayBuffer), false) as ImageData
+    }
+    case 'png':
+      await ensurePng()
+      return pngWasmDecode(new Uint8Array(arrayBuffer))
+    case 'webp': {
+      const mod = await getEmscriptenModule('webp-dec', webpDecFactory)
+      return mod.decode(new Uint8Array(arrayBuffer)) as ImageData
+    }
+    default:
+      throw new Error(`Decode not supported for format: ${format}`)
+  }
 }
 
 export function getSquooshFormatFromMime(mimeType: string): SquooshFormat | null {

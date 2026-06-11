@@ -26,7 +26,7 @@ export default function CompressionPanel() {
     : globalParams.compression
 
   const applyChange = (partial: PartialProcessParams) => {
-    if (applyToAll) {
+    if (applyToAll || !selectedId) {
       updateGlobalParams(partial)
     } else if (selectedId) {
       updateParams(selectedId, partial)
@@ -119,8 +119,8 @@ export default function CompressionPanel() {
         </div>
         <p className="text-xs text-ink-400 px-1">
           {params.encoder === 'squoosh'
-            ? 'Squoosh WASM: 更高质量，稍慢（MozJPEG / OxiPNG）'
-            : 'Canvas: 浏览器原生，速度快'}
+            ? 'Squoosh WASM: 高质量压缩（MozJPEG/OxiPNG），首次加载稍慢'
+            : 'Canvas: 浏览器原生编码，速度快兼容性好（推荐）'}
         </p>
       </div>
 

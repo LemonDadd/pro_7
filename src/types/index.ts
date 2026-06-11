@@ -83,7 +83,7 @@ export const DEFAULT_PARAMS: ProcessParams = {
     targetSizeKB: null,
     outputFormat: 'original',
     stripExif: true,
-    encoder: 'squoosh',
+    encoder: 'canvas',
   },
   crop: {
     enabled: false,
