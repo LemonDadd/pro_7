@@ -20,6 +20,10 @@ export interface ProcessedMeta {
   mimeType: string
   ssim?: number
   qualityUsed: number
+  encoderUsed: EncoderType
+  outputFormat: OutputFormat
+  formatFellBack: boolean
+  originalFormatFallbackFrom?: OutputFormat
 }
 
 export interface CompressionParams {

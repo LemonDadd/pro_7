@@ -2,16 +2,8 @@ import { create } from 'zustand'
 import type { AppState, ImageItem, ProcessParams, PartialProcessParams } from '@/types'
 import { DEFAULT_PARAMS as defaultParams } from '@/types'
 import { readImageMeta } from '@/utils/exif'
-import {
-  applyEditAndExif,
-  cropImage,
-  compressImageCanvas,
-  compressToTargetSize,
-  resolveMimeType,
-  getBestSupportedFormat,
-} from '@/utils/imageCompress'
-import { compressWithSquoosh, getSquooshFormatFromMime } from '@/utils/squoosh'
-import { estimateSSIM, getImageDataFromUrl } from '@/utils/ssim'
+import { processImageItem } from '@/core/pipeline'
+import type { PipelineOutput } from '@/core/pipeline'
 
 let idCounter = 0
 const generateId = () => `img_${Date.now()}_${++idCounter}`
@@ -230,169 +222,29 @@ export const useAppStore = create<FullState>((set, get) => ({
 
     set((s) => ({
       images: s.images.map((i) =>
-        i.id === id ? { ...i, status: 'processing', progress: 10, error: undefined } : i,
+        i.id === id ? { ...i, status: 'processing', progress: 5, error: undefined } : i,
       ),
     }))
 
+    let prevProcessedUrl: string | null = item.processedUrl
+
     try {
-      const { params, originalUrl, originalMeta, file } = item
-
-      set((s) => ({
-        images: s.images.map((i) => (i.id === id ? { ...i, progress: 20 } : i)),
-      }))
-
-      let workingCanvas: HTMLCanvasElement | null = null
-      let workingUrl = originalUrl
-      let workingBlob: Blob = file
-
-      const needsEdit =
-        params.edit.rotation !== 0 ||
-        params.edit.flipH ||
-        params.edit.flipV ||
-        params.edit.grayscale ||
-        originalMeta.exifOrientation !== 1
-
-      if (needsEdit) {
-        const result = await applyEditAndExif(file, originalMeta.exifOrientation, params.edit)
-        workingCanvas = result.canvas
-        workingUrl = result.url
-        workingBlob = result.blob
-      }
-
-      set((s) => ({
-        images: s.images.map((i) => (i.id === id ? { ...i, progress: 40 } : i)),
-      }))
-
-      if (params.crop.enabled) {
-        const cropped = await cropImage(workingUrl, params.crop.cropArea, {
-          rotation: params.crop.rotation,
-          flipH: params.edit.flipH && !needsEdit,
-          flipV: params.edit.flipV && !needsEdit,
-          outputWidth: params.crop.outputWidth ?? undefined,
-          outputHeight: params.crop.outputHeight ?? undefined,
-        })
-        workingBlob = cropped.blob
-        workingUrl = cropped.url
-        workingCanvas = cropped.canvas
-      }
-
-      set((s) => ({
-        images: s.images.map((i) => (i.id === id ? { ...i, progress: 60 } : i)),
-      }))
-
-      const effectiveFormat = getBestSupportedFormat(
-        params.compression.outputFormat,
-        originalMeta.mimeType,
-      )
-      const mimeType = resolveMimeType(effectiveFormat, originalMeta.mimeType)
-
-      let finalBlob: Blob
-      let finalUrl: string
-      let qualityUsed: number
-
-      const useSquoosh = params.compression.encoder === 'squoosh'
-      const squooshFormat = getSquooshFormatFromMime(mimeType)
-      let squooshFailed = false
-
-      if (useSquoosh && squooshFormat) {
-        try {
-          const timeoutPromise = new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('Squoosh timeout')), 30000),
-          )
-          const result = await Promise.race([
-            compressWithSquoosh(
-              workingCanvas ?? workingBlob,
-              {
-                format: squooshFormat,
-                quality: params.compression.quality,
-                targetSizeKB: params.compression.targetSizeKB ?? null,
-              },
-              (p) => {
-                set((s) => ({
-                  images: s.images.map((i) =>
-                    i.id === id ? { ...i, progress: Math.min(92, 60 + p * 0.32) } : i,
-                  ),
-                }))
-              },
-            ),
-            timeoutPromise,
-          ])
-          finalBlob = result.blob
-          finalUrl = result.url
-          qualityUsed = result.qualityUsed
-        } catch (err) {
-          console.warn('Squoosh encoding failed, falling back to Canvas:', err)
-          squooshFailed = true
-        }
-      }
-
-      if (!useSquoosh || squooshFailed || !squooshFormat) {
-        if (params.compression.targetSizeKB && params.compression.targetSizeKB > 0) {
-          const result = await compressToTargetSize(
-            workingCanvas ?? workingBlob,
-            mimeType,
-            params.compression.targetSizeKB,
-            (p) => {
-              set((s) => ({
-                images: s.images.map((i) =>
-                  i.id === id ? { ...i, progress: Math.min(90, 60 + p * 0.3) } : i,
-                ),
-              }))
-            },
-          )
-          finalBlob = result.blob
-          finalUrl = result.url
-          qualityUsed = result.qualityUsed
-        } else {
-          const result = await compressImageCanvas(
-            workingCanvas ?? workingBlob,
-            mimeType,
-            params.compression.quality,
-          )
-          finalBlob = result.blob
-          finalUrl = result.url
-          qualityUsed = params.compression.quality
+      const result = await processImageItem({
+        file: item.file,
+        originalUrl: item.originalUrl,
+        originalMeta: item.originalMeta,
+        params: item.params,
+        onProgress: (progress) => {
           set((s) => ({
-            images: s.images.map((i) => (i.id === id ? { ...i, progress: 85 } : i)),
+            images: s.images.map((i) =>
+              i.id === id ? { ...i, progress: Math.round(progress) } : i,
+            ),
           }))
-        }
-      }
-
-      set((s) => ({
-        images: s.images.map((i) => (i.id === id ? { ...i, progress: 92 } : i)),
-      }))
-
-      let ssim: number | undefined
-      try {
-        const [origImgData, procImgData] = await Promise.all([
-          getImageDataFromUrl(originalUrl),
-          getImageDataFromUrl(finalUrl),
-        ])
-        const minW = Math.min(origImgData.width, procImgData.width)
-        const minH = Math.min(origImgData.height, procImgData.height)
-        ssim = estimateSSIM(origImgData.data, procImgData.data, minW, minH)
-      } catch {
-        // SSIM is optional
-      }
-
-      const procImg = new Image()
-      await new Promise<void>((resolve) => {
-        procImg.onload = () => resolve()
-        procImg.onerror = () => resolve()
-        procImg.src = finalUrl
+        },
       })
 
-      const processedMeta = {
-        width: procImg.naturalWidth,
-        height: procImg.naturalHeight,
-        size: finalBlob.size,
-        mimeType: finalBlob.type,
-        ssim,
-        qualityUsed,
-      }
-
-      if (workingUrl !== originalUrl && !params.crop.enabled) {
-        URL.revokeObjectURL(workingUrl)
+      if (prevProcessedUrl) {
+        URL.revokeObjectURL(prevProcessedUrl)
       }
 
       set((s) => ({
@@ -400,9 +252,9 @@ export const useAppStore = create<FullState>((set, get) => ({
           i.id === id
             ? {
                 ...i,
-                processedUrl: finalUrl,
-                processedBlob: finalBlob,
-                processedMeta,
+                processedUrl: result.url,
+                processedBlob: result.blob,
+                processedMeta: result.meta,
                 status: 'done',
                 progress: 100,
               }

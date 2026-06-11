@@ -1,8 +1,9 @@
-import { Package, ShieldCheck, Cpu, Zap } from 'lucide-react'
+import { Package, ShieldCheck, Cpu, Zap, Info, AlertTriangle } from 'lucide-react'
 import Slider from '@/components/common/Slider'
 import Toggle from '@/components/common/Toggle'
 import { useAppStore } from '@/store/useAppStore'
 import type { OutputFormat, PartialProcessParams, EncoderType } from '@/types'
+import { resolveOutputFormat } from '@/core/pipeline'
 import { cn } from '@/lib/utils'
 
 const formatOptions: { value: OutputFormat; label: string }[] = [
@@ -18,12 +19,34 @@ const encoderOptions: { value: EncoderType; label: string; icon: React.ReactNode
   { value: 'canvas', label: 'Canvas', icon: <Zap size={14} /> },
 ]
 
+const FORMAT_LABELS: Record<OutputFormat, string> = {
+  original: '原始格式',
+  jpeg: 'JPEG',
+  png: 'PNG',
+  webp: 'WebP',
+  avif: 'AVIF',
+}
+
+function mimeToOutput(mime: string): OutputFormat | null {
+  if (mime === 'image/jpeg') return 'jpeg'
+  if (mime === 'image/png') return 'png'
+  if (mime === 'image/webp') return 'webp'
+  if (mime === 'image/avif') return 'avif'
+  return null
+}
+
 export default function CompressionPanel() {
   const { selectedId, applyToAll, images, globalParams, updateParams, updateGlobalParams } = useAppStore()
 
-  const params = selectedId
-    ? images.find((img) => img.id === selectedId)?.params.compression ?? globalParams.compression
-    : globalParams.compression
+  const selectedImage = selectedId ? images.find((img) => img.id === selectedId) : null
+  const params = selectedImage?.params.compression ?? globalParams.compression
+
+  const originalMime = selectedImage?.originalMeta.mimeType ?? 'image/jpeg'
+
+  const formatInfo = resolveOutputFormat(params.outputFormat, originalMime, params.encoder)
+  const actualFormat = formatInfo.format === 'original'
+    ? (selectedImage ? mimeToOutput(selectedImage.originalMeta.mimeType) ?? 'jpeg' : 'jpeg')
+    : formatInfo.format
 
   const applyChange = (partial: PartialProcessParams) => {
     if (applyToAll || !selectedId) {
@@ -94,6 +117,26 @@ export default function CompressionPanel() {
               {opt.label}
             </button>
           ))}
+        </div>
+        <div className="flex items-start gap-2 px-1 pt-1">
+          {formatInfo.fellBack ? (
+            <>
+              <AlertTriangle size={14} className="text-amber-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-amber-300/90">
+                当前编码器不支持 {formatInfo.original && FORMAT_LABELS[formatInfo.original]}，
+                <span className="font-medium">已降级为 {FORMAT_LABELS[actualFormat]}</span>
+              </p>
+            </>
+          ) : (
+            <>
+              <Info size={14} className="text-ink-400 mt-0.5 shrink-0" />
+              <p className="text-xs text-ink-400">
+                实际输出：<span className="text-ink-200 font-medium">{FORMAT_LABELS[actualFormat]}</span>
+                {params.encoder === 'squoosh' && '（Squoosh WASM 编码器）'}
+                {params.encoder === 'canvas' && '（浏览器原生 Canvas）'}
+              </p>
+            </>
+          )}
         </div>
       </div>
 
